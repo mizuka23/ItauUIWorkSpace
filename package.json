@@ -1,0 +1,13 @@
+{
+  "name": "itau-ui-workplace",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Portal Itau IU Workplace publicado no Firebase Hosting",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "validate": "node scripts/validate.mjs",
+    "firebase:login": "npx -y firebase-tools@latest login",
+    "deploy": "npm run validate && npx -y firebase-tools@latest deploy --only hosting --project itau-ui-workplace"
+  }
+}

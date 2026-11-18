@@ -1,0 +1,70 @@
+// Data model: access/{lowercase-email}: role (viewer/editor/admin), company
+// (Turner/Itaú), updatedBy (administrator UID), updatedAt (server timestamp).
+// portal/main: integer revision and chunks, snapshot ID, updater UID/email/time.
+// snapshots/{snapshot}/chunks/{chunk}: immutable string payload, index and creator UID.
+// audit/{entry}: immutable UID/email/time/revision/snapshot for each save.
+// All portal data requires email/password identity and an assigned role.
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null && request.auth.token.firebase.sign_in_provider == 'password' && request.auth.token.email is string; }
+    function member() { return signedIn() && exists(/databases/$(database)/documents/access/$(request.auth.token.email.lower())); }
+    function role() { return get(/databases/$(database)/documents/access/$(request.auth.token.email.lower())).data.role; }
+    function owner() { return member() && role() == 'admin'; }
+    function reader() { return member() && role() in ['viewer','editor','admin']; }
+    function editor() { return member() && role() in ['editor','admin']; }
+    function admin() { return owner(); }
+    // Permissions are provisioned by the trusted administrator, never by sign-up.
+    function isValidAccess() {
+      let d = request.resource.data;
+      return d.keys().hasAll(['role','company','updatedBy','updatedAt'])
+        && d.keys().hasOnly(['role','company','updatedBy','updatedAt'])
+        && d.company in ['Turner','Itaú'] && d.role in ['viewer','editor','admin']
+        && d.updatedBy == request.auth.uid && d.updatedAt == request.time;
+    }
+    match /access/{email} {
+      allow get: if signedIn() && (email == request.auth.token.email.lower() || admin());
+      allow list: if admin();
+      allow create, update: if admin() && email != request.auth.token.email.lower()
+        && email.size() <= 254 && email.matches('[^/@]+@[^/@]+')
+        && email == email.lower() && isValidAccess();
+      allow delete: if admin() && email != request.auth.token.email.lower();
+    }
+    match /portal/main {
+      allow read: if reader();
+      allow create: if owner() && validManifest() && request.resource.data.revision == 1;
+      allow update: if editor() && validManifest()
+        && request.resource.data.revision == resource.data.revision + 1;
+      function validManifest() {
+        return request.resource.data.keys().hasAll(['revision','snapshot','chunks','updatedAt','updatedBy','updatedByName'])
+          && request.resource.data.revision is int
+          && request.resource.data.keys().hasOnly(['revision','snapshot','chunks','updatedAt','updatedBy','updatedByName'])
+          && request.resource.data.chunks is int && request.resource.data.chunks > 0 && request.resource.data.chunks <= 100
+          && request.resource.data.snapshot is string && request.resource.data.snapshot.size() > 0 && request.resource.data.snapshot.size() <= 100
+          && request.resource.data.updatedBy == request.auth.uid
+          && request.resource.data.updatedByName == request.auth.token.get('email', request.auth.uid)
+          && request.resource.data.updatedAt == request.time;
+      }
+    }
+    match /snapshots/{snapshot}/chunks/{chunk} {
+      allow read: if reader();
+      allow create: if editor() && request.resource.data.keys().hasOnly(['payload','index','createdBy'])
+        && request.resource.data.payload is string && request.resource.data.payload.size() <= 800000
+        && request.resource.data.index is int && request.resource.data.index >= 0 && request.resource.data.index < 100
+        && request.resource.data.createdBy == request.auth.uid
+        && getAfter(/databases/$(database)/documents/portal/main).data.snapshot == snapshot;
+      allow update, delete: if false;
+    }
+    match /audit/{entry} {
+      allow read: if reader();
+      allow create: if editor() && request.resource.data.keys().hasOnly(['uid','email','at','revision','snapshot'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.email == request.auth.token.get('email', request.auth.uid)
+        && request.resource.data.at == request.time
+        && getAfter(/databases/$(database)/documents/portal/main).data.snapshot == request.resource.data.snapshot
+        && getAfter(/databases/$(database)/documents/portal/main).data.revision == request.resource.data.revision;
+      allow update, delete: if false;
+    }
+    match /{document=**} { allow read, write: if false; }
+  }
+}
